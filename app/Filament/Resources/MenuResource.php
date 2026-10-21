@@ -1,0 +1,475 @@
+<?php
+
+namespace App\Filament\Resources;
+
+use App\Filament\Resources\MenuResource\Pages;
+use App\Models\MenuItem;
+use App\Models\Category;
+use App\Models\Branch;
+use Filament\Forms;
+use Filament\Forms\Form;
+use Filament\Resources\Resource;
+use Filament\Tables;
+use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Str;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\HtmlString;
+
+class MenuResource extends Resource
+{
+    protected static ?string $model = MenuItem::class;
+
+    protected static ?string $navigationIcon = 'heroicon-o-book-open';
+    protected static ?string $navigationLabel = 'Menu Dashboard';
+    protected static ?string $navigationGroup = 'Menu Management';
+    protected static ?int $navigationSort = 1;
+
+    /* -----------------------------------------------------------
+       PERMISSIONS
+    ------------------------------------------------------------*/
+    public static function canAccess(): bool
+    {
+        return auth()->check()
+            && auth()->user()->restaurant_id !== null
+            && in_array(auth()->user()->role->name, ['restaurant_admin', 'manager', 'branch_admin']);
+    }
+
+    public static function canCreate(): bool
+    {
+        return true; 
+    }
+
+    public static function canEdit(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        return true; 
+    }
+
+    public static function canDelete(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        $user = auth()->user();
+        if ($user->branch_id === null) return $record->branch_id === null;
+        return $record->branch_id === $user->branch_id;
+    }
+
+    /* -----------------------------------------------------------
+       DATA ISOLATION
+    ------------------------------------------------------------*/
+    public static function getEloquentQuery(): Builder
+    {
+        $user = auth()->user();
+        $query = parent::getEloquentQuery()->withoutGlobalScopes();
+        
+        $query->where('restaurant_id', $user->restaurant_id);
+
+        if ($user->isBranchAdmin() || $user->isManager()) {
+            $branch = $user->branch_id ? Branch::find($user->branch_id) : null;
+            if ($branch && !$branch->inherit_restaurant_menu) {
+                // Independent branch: Only its own items
+                $query->where('branch_id', $user->branch_id);
+            } else {
+                // Inherited: Central items + this branch's items
+                $query->where(function ($q) use ($user) {
+                    $q->whereNull('branch_id');
+                    if ($user->branch_id) {
+                        $q->orWhere('branch_id', $user->branch_id);
+                    }
+                });
+            }
+        }
+
+        return $query;
+    }
+
+    /* -----------------------------------------------------------
+       CARD GRID LAYOUT (GLASS + BLACK BORDER)
+    ------------------------------------------------------------*/
+    public static function table(Table $table): Table
+    {
+        $bgImageUrl = asset('images/bg.png');
+
+        return $table
+            ->heading(new HtmlString('
+                <style>
+                    /* --- 🌟 MAKE FILAMENT WRAPPERS TRANSPARENT --- */
+                    html, body, .fi-layout, .fi-main, .fi-page {
+                        background-color: transparent !important;
+                        background: transparent !important;
+                    }
+
+                    /* --- 🌟 BACKGROUND IMAGE WITH 0.15 OPACITY --- */
+                    body::before {
+                        content: "";
+                        position: fixed;
+                        top: 0; left: 0; right: 0; bottom: 0;
+                        background-image: url("' . $bgImageUrl . '") !important;
+                        background-size: cover !important;
+                        background-position: center !important;
+                        background-attachment: fixed !important;
+                        opacity: 0.15 !important;
+                        z-index: -999 !important;
+                        pointer-events: none;
+                    }
+
+                    /* --- 🎨 CARD BASE (GLASS + BLACK BORDER) --- */
+                    .fi-ta-record {
+                        border-radius: 16px !important;
+                        background: rgba(255, 255, 255, 0.45) !important;
+                        backdrop-filter: blur(16px) saturate(140%) !important;
+                        -webkit-backdrop-filter: blur(16px) saturate(140%) !important;
+                        border: 1.5px solid #000000 !important; /* BLACK BORDER */
+                        box-shadow: 0 8px 32px rgba(42, 71, 149, 0.08) !important;
+                        transition: all 0.3s ease !important;
+                        overflow: hidden !important;
+                        position: relative !important;
+                    }
+                    .dark .fi-ta-record { background: rgba(15, 15, 20, 0.7) !important; }
+                    
+                    .fi-ta-record:hover {
+                        transform: translateY(-5px) !important;
+                        box-shadow: 0 12px 40px rgba(42, 71, 149, 0.15) !important;
+                    }
+
+                    /* Category Badge */
+                    .fi-ta-record .fi-badge {
+                        color: #2a4795 !important; 
+                        background-color: rgba(42, 71, 149, 0.1) !important;
+                        border: 1px solid rgba(42, 71, 149, 0.2) !important;
+                    }
+
+                    /* Veg/Non-Veg Badges */
+                    .type-badge-veg {
+                        display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 99px;
+                        font-size: 0.65rem; font-weight: 800; background: rgba(34, 197, 94, 0.15); color: #16a34a; border: 1px solid rgba(34, 197, 94, 0.3);
+                        margin-top: 4px;
+                    }
+                    .type-badge-non-veg {
+                        display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 99px;
+                        font-size: 0.65rem; font-weight: 800; background: rgba(239, 68, 68, 0.15); color: #dc2626; border: 1px solid rgba(239, 68, 68, 0.3);
+                        margin-top: 4px;
+                    }
+
+                    /* Price & Toggle Switch */
+                    .custom-price-text { color: #2a4795 !important; font-size: 1.1rem !important; }
+                    .fi-ta-record button[role="switch"][aria-checked="true"] { background-color: #f16b3f !important; }
+
+                    /* Edit Button (Blue Style) */
+                    .fi-ta-record .fi-ta-actions button:nth-of-type(1) {
+                        background-color: #2a4795 !important; border: 1px solid #000000 !important; color: white !important; border-radius: 8px !important; padding: 4px 12px !important;
+                    }
+                    .fi-ta-record .fi-ta-actions button:nth-of-type(1):hover { background-color: #456aba !important; }
+
+                    /* Delete Button (Red Style) */
+                    .fi-ta-record .fi-ta-actions button:nth-of-type(2) {
+                        color: #ef4444 !important; border: 1px solid #ef4444 !important; border-radius: 8px !important; background: transparent !important;
+                    }
+                    .fi-ta-record .fi-ta-actions button:nth-of-type(2):hover { background: rgba(239, 68, 68, 0.1) !important; }
+
+                    .branch-badge {
+                        position: absolute; top: 10px; right: 10px; background: #f16b3f; color: white; font-size: 0.62rem; font-weight: 800; padding: 2px 8px; border-radius: 99px; z-index: 20; border: 1.5px solid #000000; letter-spacing: 0.02em; box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+                    }
+                    .inherited-badge {
+                        position: absolute; top: 10px; right: 10px; background: #2a4795; color: white; font-size: 0.62rem; font-weight: 800; padding: 2px 8px; border-radius: 99px; z-index: 20; border: 1.5px solid #000000; letter-spacing: 0.02em; box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+                    }
+                </style>
+            '))
+            ->contentGrid([
+                'md' => 3, 
+                'lg' => 4, 
+                'xl' => 5, 
+            ])
+            ->columns([
+                Tables\Columns\Layout\Stack::make([
+                    Tables\Columns\TextColumn::make('origin_badge')
+                        ->state(fn ($record) => $record)
+                        ->formatStateUsing(function ($state, $record): HtmlString {
+                            if ($record->branch_id === null) {
+                                return new HtmlString('<span class="inherited-badge">🏢 INHERITED</span>');
+                            }
+                            $user = auth()->user();
+                            $label = ($user && $user->isRestaurantAdmin()) ? ($record->branch?->name ?? 'BRANCH') : 'BRANCH ITEM';
+                            return new HtmlString('<span class="branch-badge">🏪 ' . e(strtoupper($label)) . '</span>');
+                        }),
+
+                    Tables\Columns\ImageColumn::make('image_path')
+                        ->height('140px') 
+                        ->width('100%')
+                        ->extraImgAttributes(['class' => 'object-cover w-full h-full border-b border-black']),
+
+                    Tables\Columns\Layout\Stack::make([
+                        Tables\Columns\TextColumn::make('name')
+                            ->weight('black')
+                            ->size('lg')
+                            ->searchable(), 
+
+                        Tables\Columns\TextColumn::make('type')
+                            ->formatStateUsing(function (string $state, $record): HtmlString {
+                                $typeHtml = $state === 'veg' 
+                                    ? '<span class="type-badge-veg">● VEG</span>' 
+                                    : '<span class="type-badge-non-veg">● NON-VEG</span>';
+
+                                if ($record->branch_id === null) {
+                                    $sourceHtml = '<span style="display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 99px; font-size: 0.62rem; font-weight: 800; background: rgba(42, 71, 149, 0.12); color: #2a4795; border: 1px solid rgba(42, 71, 149, 0.3);">🏢 Central Menu</span>';
+                                } else {
+                                    $branchLabel = auth()->user()?->isRestaurantAdmin() ? ($record->branch?->name ?? 'Branch') : 'Branch Item';
+                                    $sourceHtml = '<span style="display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 99px; font-size: 0.62rem; font-weight: 800; background: rgba(241, 107, 63, 0.15); color: #f16b3f; border: 1px solid rgba(241, 107, 63, 0.35);">🏪 ' . e($branchLabel) . '</span>';
+                                }
+
+                                return new HtmlString('<div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px;">' . $typeHtml . $sourceHtml . '</div>');
+                            }),
+
+                        Tables\Columns\TextColumn::make('category.name')
+                            ->badge()
+                            ->size('xs'), 
+
+                        Tables\Columns\TextColumn::make('price')
+                            ->money('INR')
+                            ->weight('black')
+                            ->extraAttributes(['class' => 'custom-price-text']), 
+
+                        Tables\Columns\ToggleColumn::make('is_available')
+                            ->label('Stock Status')
+                            ->getStateUsing(function ($record) {
+                                if (!$record) return false;
+                                $user = auth()->user();
+                                if ($user->branch_id !== null && $record->branch_id === null) {
+                                    $status = DB::table('branch_menu_item_status')
+                                        ->where('menu_item_id', $record->id)
+                                        ->where('branch_id', $user->branch_id)
+                                        ->first();
+                                    return $status ? (bool) $status->is_available : (bool) $record->is_available;
+                                }
+                                return (bool) $record->is_available;
+                            })
+                            ->updateStateUsing(function ($record, $state) {
+                                if (!$record) return;
+                                $user = auth()->user();
+                                if ($user->branch_id !== null && $record->branch_id === null) {
+                                    DB::table('branch_menu_item_status')->updateOrInsert(
+                                        ['menu_item_id' => $record->id, 'branch_id' => $user->branch_id],
+                                        ['is_available' => $state, 'updated_at' => now()]
+                                    );
+                                } else {
+                                    $record->update(['is_available' => $state]);
+                                }
+                            }),
+                    ])->space(2)->extraAttributes(['class' => 'p-4']), 
+                ])->space(0),
+            ])
+            ->filters([
+                Tables\Filters\SelectFilter::make('menu_source')
+                    ->label('Filter by Origin')
+                    ->options([
+                        'inherited' => '🏢 Inherited (Main Restaurant)',
+                        'branch' => '🏪 Created by This Branch',
+                    ])
+                    ->query(function (Builder $query, array $data) {
+                        $value = $data['value'] ?? null;
+                        if (!$value) return;
+                        $user = auth()->user();
+                        if ($value === 'inherited') {
+                            $query->whereNull('branch_id');
+                        } elseif ($value === 'branch') {
+                            $query->where('branch_id', $user?->branch_id);
+                        }
+                    })
+                    ->visible(function () {
+                        $user = auth()->user();
+                        if (!$user || !($user->isBranchAdmin() || $user->isManager())) return false;
+                        $branch = $user->branch_id ? Branch::find($user->branch_id) : null;
+                        return $branch && $branch->inherit_restaurant_menu;
+                    }),
+
+                Tables\Filters\SelectFilter::make('branch_id')
+                    ->label('Filter by Outlet')
+                    ->options(function () {
+                        $user = auth()->user();
+                        if (!$user || !$user->isRestaurantAdmin()) return [];
+                        $branches = Branch::where('restaurant_id', $user->restaurant_id)->pluck('name', 'id')->toArray();
+                        return ['main' => '🏢 Main Restaurant (Central)'] + $branches;
+                    })
+                    ->query(function (Builder $query, array $data) {
+                        $value = $data['value'] ?? null;
+                        if (!$value) return;
+                        if ($value === 'main') {
+                            $query->whereNull('branch_id');
+                        } else {
+                            $query->where('branch_id', $value);
+                        }
+                    })
+                    ->visible(fn() => auth()->user()?->isRestaurantAdmin() && (bool) auth()->user()?->restaurant?->has_branches),
+
+                Tables\Filters\SelectFilter::make('category_id')
+                    ->label('Filter by Category')
+                    ->options(function () {
+                        $user = auth()->user();
+                        if (!$user || !$user->restaurant_id) return [];
+                        $query = Category::withoutGlobalScopes()
+                            ->where('restaurant_id', $user->restaurant_id);
+
+                        if ($user->isRestaurantAdmin()) {
+                            // Main restaurant admin can view all categories
+                        } elseif ($user->isBranchAdmin() || ($user->isManager() && $user->branch_id)) {
+                            $branch = $user->branch_id ? Branch::find($user->branch_id) : null;
+                            if ($branch && !$branch->inherit_restaurant_menu) {
+                                $query->where('branch_id', $user->branch_id);
+                            } else {
+                                $query->where(function($q) use ($user) {
+                                    $q->whereNull('branch_id');
+                                    if ($user->branch_id) $q->orWhere('branch_id', $user->branch_id);
+                                });
+                            }
+                        } else {
+                            // Main restaurant manager: only central categories
+                            $query->whereNull('branch_id');
+                        }
+
+                        return $query->orderBy('sort_order')
+                            ->orderBy('name')
+                            ->pluck('name', 'id')->toArray();
+                    })->searchable(),
+                
+                Tables\Filters\SelectFilter::make('type')
+                    ->label('Filter by Type')
+                    ->options(['veg' => 'Veg', 'non-veg' => 'Non-Veg']),
+            ])
+            ->actions([
+                Tables\Actions\Action::make('manage_recipe')
+                    ->label('Recipe')
+                    ->icon('heroicon-o-beaker')
+                    ->button()
+                    ->size('xs')
+                    ->color('info')
+                    ->visible(fn() => (bool) auth()->user()->restaurant?->has_detailed_inventory)
+                    ->modalHeading(fn($record) => "Recipe for: {$record->name}")
+                    ->modalWidth('3xl')
+                    ->form(fn($record) => [
+                        Forms\Components\Repeater::make('ingredients')
+                            ->label('Ingredients Required (per 1 portion)')
+                            ->schema([
+                                Forms\Components\Select::make('grocery_item_id')
+                                    ->label('Raw Material')
+                                    ->options(fn() => \App\Models\GroceryItem::where('restaurant_id', auth()->user()->restaurant_id)->pluck('name', 'id'))
+                                    ->required()
+                                    ->searchable()
+                                    ->preload()
+                                    ->columnSpan(2),
+
+                                Forms\Components\TextInput::make('quantity_required')
+                                    ->label('Qty Needed')
+                                    ->numeric()
+                                    ->minValue(0.0001)
+                                    ->required()
+                                    ->columnSpan(1),
+
+                                Forms\Components\Select::make('measurement_unit_id')
+                                    ->label('Unit')
+                                    ->options(fn() => \App\Models\MeasurementUnit::where('restaurant_id', auth()->user()->restaurant_id)->pluck('name', 'id'))
+                                    ->required()
+                                    ->searchable()
+                                    ->preload()
+                                    ->columnSpan(1),
+                            ])
+                            ->columns(4)
+                            ->defaultItems(0)
+                            ->addActionLabel('+ Add Ingredient')
+                            ->default(
+                                $record->recipes()->with('groceryItem', 'measurementUnit')->get()->map(fn($r) => [
+                                    'grocery_item_id' => $r->grocery_item_id,
+                                    'quantity_required' => $r->quantity_required,
+                                    'measurement_unit_id' => $r->measurement_unit_id,
+                                ])->toArray()
+                            ),
+                    ])
+                    ->action(function ($record, array $data) {
+                        $record->recipes()->delete();
+
+                        foreach ($data['ingredients'] ?? [] as $ingredient) {
+                            $record->recipes()->create([
+                                'grocery_item_id' => $ingredient['grocery_item_id'],
+                                'quantity_required' => $ingredient['quantity_required'],
+                                'measurement_unit_id' => $ingredient['measurement_unit_id'],
+                            ]);
+                        }
+
+                        \Filament\Notifications\Notification::make()
+                            ->title('Recipe updated for ' . $record->name)
+                            ->body(count($data['ingredients'] ?? []) . ' ingredient(s) saved.')
+                            ->success()->send();
+                    }),
+
+                Tables\Actions\EditAction::make()
+                    ->button()
+                    ->size('xs')
+                    ->form([
+                        Forms\Components\Select::make('category_id')
+                            ->label('Category')
+                            ->required()
+                            ->disabled(fn($record) => $record && auth()->user()->branch_id !== null && $record->branch_id === null)
+                            ->options(function () {
+                                $user = auth()->user();
+                                $query = Category::withoutGlobalScopes()
+                                    ->where('restaurant_id', $user->restaurant_id);
+
+                                if ($user->isRestaurantAdmin()) {
+                                    // Main restaurant admin can view all categories
+                                } elseif ($user->isBranchAdmin() || ($user->isManager() && $user->branch_id)) {
+                                    $branch = $user->branch_id ? Branch::find($user->branch_id) : null;
+                                    if ($branch && !$branch->inherit_restaurant_menu) {
+                                        $query->where('branch_id', $user->branch_id);
+                                    } else {
+                                        $query->where(function($q) use ($user) {
+                                            $q->whereNull('branch_id');
+                                            if ($user->branch_id) $q->orWhere('branch_id', $user->branch_id);
+                                        });
+                                    }
+                                } else {
+                                    // Main restaurant manager: only central categories
+                                    $query->whereNull('branch_id');
+                                }
+
+                                return $query->orderBy('sort_order')
+                                    ->orderBy('name')
+                                    ->pluck('name', 'id');
+                            }),
+                        
+                        Forms\Components\TextInput::make('name')
+                            ->label('Item Name')
+                            ->required()
+                            ->maxLength(150)
+                            ->disabled(fn($record) => $record && auth()->user()->branch_id !== null && $record->branch_id === null),
+                        
+                        Forms\Components\TextInput::make('price')
+                            ->numeric()->required()->prefix('₹')
+                            ->disabled(fn($record) => $record && auth()->user()->branch_id !== null && $record->branch_id === null),
+                        
+                        Forms\Components\Select::make('type')
+                            ->options(['veg' => 'Veg', 'non-veg' => 'Non-Veg'])
+                            ->required()
+                            ->disabled(fn($record) => $record && auth()->user()->branch_id !== null && $record->branch_id === null),
+                            
+                        Forms\Components\FileUpload::make('image_path')
+                            ->image()->disk('public')->required()
+                            ->disabled(fn($record) => $record && auth()->user()->branch_id !== null && $record->branch_id === null),
+                            
+                        Forms\Components\Textarea::make('description')
+                            ->maxLength(500)
+                            ->columnSpanFull()
+                            ->disabled(fn($record) => $record && auth()->user()->branch_id !== null && $record->branch_id === null),
+                    ]),
+
+                Tables\Actions\DeleteAction::make()
+                    ->button()
+                    ->size('xs')
+                    ->outlined()
+                    ->visible(fn($record) => $record && (auth()->user()->branch_id === null ? $record->branch_id === null : $record->branch_id === auth()->user()->branch_id)),
+            ]);
+    }
+
+    public static function getPages(): array
+    {
+        return [
+            'index' => Pages\ManageMenus::route('/'),
+        ];
+    }
+}
