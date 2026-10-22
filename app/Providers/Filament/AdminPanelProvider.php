@@ -28,7 +28,7 @@ class AdminPanelProvider extends PanelProvider
             ->default()
             ->id('admin')
             ->path('admin')
-            ->login()
+            ->login(\App\Filament\Pages\Auth\Login::class)
             ->maxContentWidth('full')
             ->brandLogo(asset('img/annsathilogo.png'))
             ->brandLogoHeight('5rem')
